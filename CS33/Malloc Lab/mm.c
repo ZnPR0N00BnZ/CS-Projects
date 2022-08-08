@@ -41,7 +41,6 @@ team_t team = {
     /* Custom message (16 chars) */
     "helpmegod",
 };
-// Check version control
 
 typedef struct
 {
@@ -75,13 +74,15 @@ enum block_state
     ALLOC
 };
 
-// 65536 bits/bytes?
+// 65536 bytes?
 #define CHUNKSIZE (1 << 16)                            /* initial heap size (bytes) */
 #define OVERHEAD (sizeof(header_t) + sizeof(footer_t)) /* overhead of the header and footer of an allocated block */
 #define MIN_BLOCK_SIZE (32)                            /* the minimum block size needed to keep in a freelist (header + footer + next pointer + prev pointer) */
 
-/* Global variables */
-static block_t *prologue; /* pointer to first block */
+/* Global variables */                                   // Added mine
+static block_t *heap_listp; /* pointer to first block */ // original
+static block_t *heap_listp;                              /* pointer to first block */
+static block_t *free_listp;                              /* pointer to first block in free list */
 
 /* function prototypes for internal helper routines */
 static block_t *extend_heap(size_t words);
@@ -91,6 +92,39 @@ static block_t *coalesce(block_t *block);
 static footer_t *get_footer(block_t *block);
 static void printblock(block_t *block);
 static void checkblock(block_t *block);
+static void mm_checkheap(int verbose);
+
+/* Textbook given macros */
+/* Basic constants and macros */
+#define WSIZE 4 /* word size (bytes) */
+#define DSIZE 8 /* doubleword size (bytes) */
+//#define CHUNKSIZE (1 << 12) /* initial heap size (bytes) */
+//#define OVERHEAD 8          /* overhead of header and footer (bytes) */
+
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
+
+/* Pack a size and allocated bit into a word */
+#define PACK(size, alloc) ((size) | (alloc))
+
+/* Read and write a word at address p */
+#define GET(p) (*(size_t *)(p))
+#define PUT(p, val) (*(size_t *)(p) = (val))
+
+/* Read the size and allocated fields from address p */
+#define GET_SIZE(p) (GET(p) &  ̃0x1)
+#define GET_ALLOC(p) (GET(p) & 0x1)
+
+/* Given block ptr bp, compute address of its header and footer */ // bp points to first payload byte
+#define HDRP(bp) ((void *)(bp)-DSIZE)
+#define FTRP(bp) ((void *)(bp) + GET_SIZE(HDRP(bp)) - 2 * DSIZE)
+
+/* Given block ptr bp, compute address of next and previous blocks */
+#define NEXT_BLKP(bp) ((void *)(bp) + GET_SIZE(((void *)(bp)-DSIZE))) // bp points to payload of next block
+#define PREV_BLKP(bp) ((void *)(bp)-GET_SIZE(((void *)(bp)-2 * DSIZE)))
+
+/*Walk the linked lists */
+#define NEXT_FREE(bp) (*(void **)(bp))
+#define PREV_FREE(bp) (*(void **)(bp + DSIZE)) // DSIZE or WSIZE?
 
 /*
  * mm_init - Initialize the memory manager
@@ -98,25 +132,51 @@ static void checkblock(block_t *block);
 /* $begin mminit */
 int mm_init(void)
 {
-
     /* create the initial empty heap */
-    if ((prologue = mem_sbrk(CHUNKSIZE)) == (void *)-1)
+    if ((heap_listp = mem_sbrk(CHUNKSIZE)) == (void *)-1)
         return -1;
     /* initialize the prologue */
-    prologue->allocated = ALLOC;
-    prologue->block_size = sizeof(header_t);
+    PUT(heap_listp, PACK(OVERHEAD, ALLOC)); // why overhead instead of sizeof(header_t)??
+    // heap_listp->allocated = ALLOC;
+    // heap_listp->block_size = sizeof(header_t);
+
     /* initialize the first free block */
-    block_t *init_block = (void *)prologue + sizeof(header_t);
+    // PUT(heap_listp + 2 * DSIZE, PACK(CHUNKSIZE - OVERHEAD, FREE));
+    block_t *init_block = (void *)heap_listp + sizeof(header_t);
     init_block->allocated = FREE;
     init_block->block_size = CHUNKSIZE - OVERHEAD;
+    // PUT(heap_listp + 3 * DSIZE, PACK(CHUNKSIZE - OVERHEAD, FREE));
     footer_t *init_footer = get_footer(init_block);
     init_footer->allocated = FREE;
     init_footer->block_size = init_block->block_size;
+
     /* initialize the epilogue - block size 0 will be used as a terminating condition */
+    // PUT(heap_listp + 4 * DSIZE, PACK(0, 1));
     block_t *epilogue = (void *)init_block + init_block->block_size;
-    epilogue->allocated = ALLOC;
-    epilogue->block_size = 0;
+    PUT(epilogue, PACK(0, 1));
+    // epilogue->allocated = ALLOC;
+    // epilogue->block_size = 0;
+
     return 0;
+
+    // if ((heap_listp = mem_sbrk(CHUNKSIZE)) == (void *)-1)
+    //     return -1;
+    // /* initialize prologue n header */
+    // PUT(heap_listp, PACK(sizeof(header_t), 1));
+
+    // PUT(heap_listp + DSIZE, PACK(CHUNKSIZE - OVERHEAD, 0));
+    // /* initialize next and prev pointers */
+    // PUT(heap_listp + 2 * DSIZE, PACK(0, 0));
+    // PUT(heap_listp + 3 * DSIZE, PACK(0, 0));
+
+    // /*initialize epilogue and footer */
+    // PUT(heap_listp + 4 * DSIZE, PACK(CHUNKSIZE - OVERHEAD, 0));
+    // PUT(heap_listp + 5 * DSIZE, PACK(0, 1));
+
+    // // free_listp now points to first payload byte
+    // free_listp = heap_listp + 2 * DSIZE;
+
+    // return 0;
 }
 /* $end mminit */
 
@@ -173,6 +233,7 @@ void *mm_malloc(size_t size)
 /* $begin mmfree */
 void mm_free(void *payload)
 {
+    mm_checkheap(0);
     block_t *block = payload - sizeof(header_t);
     block->allocated = FREE;
     footer_t *footer = get_footer(block);
@@ -210,17 +271,17 @@ void *mm_realloc(void *ptr, size_t size)
  */
 void mm_checkheap(int verbose)
 {
-    block_t *block = prologue;
+    block_t *block = heap_listp;
 
     if (verbose)
-        printf("Heap (%p):\n", prologue);
+        printf("Heap (%p):\n", heap_listp);
 
     if (block->block_size != sizeof(header_t) || !block->allocated)
         printf("Bad prologue header\n");
-    checkblock(prologue);
+    checkblock(heap_listp);
 
     /* iterate through the heap (both free and allocated blocks will be present) */
-    for (block = (void *)prologue + prologue->block_size; block->block_size > 0; block = (void *)block + block->block_size)
+    for (block = (void *)heap_listp + heap_listp->block_size; block->block_size > 0; block = (void *)block + block->block_size)
     {
         if (verbose)
             printblock(block);
@@ -309,7 +370,7 @@ static block_t *find_fit(size_t asize)
     /* first fit search */
     block_t *b;
 
-    for (b = (void *)prologue + prologue->block_size; b->block_size > 0; b = (void *)b + b->block_size)
+    for (b = (void *)heap_listp + heap_listp->block_size; b->block_size > 0; b = (void *)b + b->block_size)
     {
         /* block must be free and the size must be large enough to hold the request */
         if (!b->allocated && asize <= b->block_size)
@@ -370,11 +431,13 @@ static block_t *coalesce(block_t *block)
     return block;
 }
 
+// Prob dont change
 static footer_t *get_footer(block_t *block)
 {
     return (void *)block + block->block_size - sizeof(footer_t);
 }
 
+// Prob dont change
 static void printblock(block_t *block)
 {
     uint32_t hsize, halloc, fsize, falloc;
@@ -395,6 +458,7 @@ static void printblock(block_t *block)
            (halloc ? 'a' : 'f'), fsize, (falloc ? 'a' : 'f'));
 }
 
+// Prob dont change
 static void checkblock(block_t *block)
 {
     if ((uint64_t)block->body.payload % 8)
