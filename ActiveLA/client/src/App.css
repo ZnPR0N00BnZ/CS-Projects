@@ -1,0 +1,12 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: 'Exo', sans-serif;
+  font-family: 'Work Sans', sans-serif;
+}
+
+a {
+  color: inherit; /* blue colors for links too */
+  text-decoration: inherit; /* no underline */
+}
